@@ -31,9 +31,9 @@ func RunLLMJudge(ctx context.Context, client *llm.Client, model, prompt string) 
 		return JudgeResult{Allow: true, Reason: "judge unavailable"}, nil
 	}
 
-	upper := strings.ToUpper(strings.TrimSpace(response))
+	upper := strings.ToUpper(strings.TrimSpace(response.Content))
 	if strings.HasPrefix(upper, "BLOCK") {
-		reason := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(response, "BLOCK"), "-"))
+		reason := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(response.Content, "BLOCK"), "-"))
 		return JudgeResult{Allow: false, Reason: strings.TrimSpace(reason)}, nil
 	}
 
