@@ -75,6 +75,25 @@ func (l *SlidingWindowLimiter) Allow(fingerprint string, tokens int) bool {
 	return true
 }
 
+// Record adds tokens to a fingerprint's usage without checking the budget.
+// Used to record actual output tokens after an LLM call completes.
+func (l *SlidingWindowLimiter) Record(fingerprint string, tokens int) {
+	l.mu.Lock()
+	ub, ok := l.users[fingerprint]
+	if !ok {
+		ub = &userBudget{}
+		l.users[fingerprint] = ub
+	}
+	l.mu.Unlock()
+
+	ub.mu.Lock()
+	ub.entries = append(ub.entries, tokenEntry{
+		timestamp: time.Now(),
+		tokens:    tokens,
+	})
+	ub.mu.Unlock()
+}
+
 // UsedTokens returns the current token usage for a fingerprint within the window.
 func (l *SlidingWindowLimiter) UsedTokens(fingerprint string) int {
 	l.mu.RLock()

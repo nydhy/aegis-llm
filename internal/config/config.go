@@ -6,34 +6,45 @@ import (
 )
 
 type Config struct {
-	Port    string
-	OllamaBaseURL   string
-	OllamaJudgeModel string
-	OllamaProxyModel string
+	Port string
+
+	// Proxy LLM — where user requests are forwarded (any OpenAI-compatible endpoint)
+	LLMBaseURL string
+	LLMAPIKey  string
+	LLMModel   string
+
+	// Judge LLM — optional, for evaluating SUSPICIOUS entropy prompts
+	// Defaults to same provider as proxy LLM if not set separately
+	JudgeEnabled bool
+	JudgeBaseURL string
+	JudgeAPIKey  string
+	JudgeModel   string
 
 	// Entropy thresholds
 	EntropyHighThreshold       float64
 	EntropySuspiciousThreshold float64
 
-	// Sliding window token budget
+	// Sliding window token budget per user per hour
 	TokenBudgetPerHour int
 
 	// Penalty TTL in minutes
 	PenaltyTTLMinutes int
 
-	// Rate limit: requests per minute per fingerprint
+	// Rate limit: requests per minute per user fingerprint
 	RateLimitRPM int
 
-	// Optional API key to protect the proxy itself
+	// Optional Bearer token to protect the proxy itself
 	APIKey string
 }
 
 func Load() *Config {
-	return &Config{
+	cfg := &Config{
 		Port:                       getEnv("PORT", "8080"),
-		OllamaBaseURL:              getEnv("OLLAMA_BASE_URL", "http://localhost:11434"),
-		OllamaJudgeModel:           getEnv("OLLAMA_JUDGE_MODEL", "llama3"),
-		OllamaProxyModel:           getEnv("OLLAMA_PROXY_MODEL", "llama3"),
+		LLMBaseURL:                 getEnv("LLM_BASE_URL", "http://localhost:11434/v1"),
+		LLMAPIKey:                  getEnv("LLM_API_KEY", ""),
+		LLMModel:                   getEnv("LLM_MODEL", "llama3"),
+		JudgeEnabled:               getEnvBool("JUDGE_ENABLED", false),
+		JudgeModel:                 getEnv("JUDGE_MODEL", "llama3"),
 		EntropyHighThreshold:       getEnvFloat("ENTROPY_HIGH_THRESHOLD", 6.5),
 		EntropySuspiciousThreshold: getEnvFloat("ENTROPY_SUSPICIOUS_THRESHOLD", 5.5),
 		TokenBudgetPerHour:         getEnvInt("TOKEN_BUDGET_PER_HOUR", 50000),
@@ -41,11 +52,24 @@ func Load() *Config {
 		RateLimitRPM:               getEnvInt("RATE_LIMIT_RPM", 60),
 		APIKey:                     getEnv("AEGIS_API_KEY", ""),
 	}
+
+	// Judge can share the proxy provider or use a dedicated one
+	cfg.JudgeBaseURL = getEnv("JUDGE_BASE_URL", cfg.LLMBaseURL)
+	cfg.JudgeAPIKey = getEnv("JUDGE_API_KEY", cfg.LLMAPIKey)
+
+	return cfg
 }
 
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	if v := os.Getenv(key); v != "" {
+		return v == "true" || v == "1" || v == "yes"
 	}
 	return fallback
 }

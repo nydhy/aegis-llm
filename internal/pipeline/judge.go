@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/nydhy/aegis-llm/internal/ollama"
+	"github.com/nydhy/aegis-llm/internal/llm"
 )
 
 const judgeSystemPrompt = `You are a security classifier for an LLM proxy.
@@ -19,17 +19,21 @@ type JudgeResult struct {
 	Reason string
 }
 
-func RunLLMJudge(ctx context.Context, client *ollama.Client, model, prompt string) (JudgeResult, error) {
-	response, err := client.ChatComplete(ctx, model, judgeSystemPrompt, prompt)
+func RunLLMJudge(ctx context.Context, client *llm.Client, model, prompt string) (JudgeResult, error) {
+	messages := []llm.Message{
+		{Role: "system", Content: judgeSystemPrompt},
+		{Role: "user", Content: prompt},
+	}
+
+	response, err := client.Chat(ctx, model, messages)
 	if err != nil {
-		// Fail open on judge error — don't block legitimate traffic
+		// Fail open — don't block legitimate traffic when judge is unavailable
 		return JudgeResult{Allow: true, Reason: "judge unavailable"}, nil
 	}
 
 	upper := strings.ToUpper(strings.TrimSpace(response))
 	if strings.HasPrefix(upper, "BLOCK") {
-		reason := strings.TrimSpace(strings.TrimPrefix(response, "BLOCK"))
-		reason = strings.TrimPrefix(reason, "-")
+		reason := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(response, "BLOCK"), "-"))
 		return JudgeResult{Allow: false, Reason: strings.TrimSpace(reason)}, nil
 	}
 

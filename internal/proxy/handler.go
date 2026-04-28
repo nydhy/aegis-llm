@@ -8,41 +8,42 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/nydhy/aegis-llm/internal/config"
-	"github.com/nydhy/aegis-llm/internal/ollama"
+	"github.com/nydhy/aegis-llm/internal/llm"
 	"github.com/nydhy/aegis-llm/internal/penalty"
 	"github.com/nydhy/aegis-llm/internal/pipeline"
 	"github.com/nydhy/aegis-llm/internal/ratelimit"
 )
 
 type Server struct {
-	router  *gin.Engine
-	cfg     *config.Config
-	ollama  *ollama.Client
-	penalty *penalty.Store
-	budget  *ratelimit.SlidingWindowLimiter
+	router      *gin.Engine
+	cfg         *config.Config
+	proxyClient *llm.Client
+	judgeClient *llm.Client // nil when judge is disabled
+	penalty     *penalty.Store
+	budget      *ratelimit.SlidingWindowLimiter
 }
 
 type ChatRequest struct {
-	Model    string             `json:"model"`
-	Messages []ollama.Message   `json:"messages"`
-	Stream   bool               `json:"stream"`
+	Model    string        `json:"model"`
+	Messages []llm.Message `json:"messages"`
+	Stream   bool          `json:"stream"`
 }
 
 type ShieldMeta struct {
-	Fingerprint  string  `json:"fingerprint"`
 	ThreatLevel  string  `json:"threat_level"`
 	Entropy      float64 `json:"entropy"`
 	TokensUsed   int     `json:"tokens_used_this_window"`
 	BudgetLimit  int     `json:"budget_limit"`
 	Penalised    bool    `json:"penalised"`
+	JudgeEnabled bool    `json:"judge_enabled"`
 	BlockReason  string  `json:"block_reason,omitempty"`
 	ResponseTime string  `json:"response_time"`
 }
 
 type ChatResponse struct {
-	Model   string `json:"model"`
-	Message ollama.Message `json:"message"`
-	Aegis   ShieldMeta     `json:"aegis"`
+	Model   string        `json:"model"`
+	Message llm.Message   `json:"message"`
+	Aegis   ShieldMeta    `json:"aegis"`
 }
 
 func NewServer(cfg *config.Config) *Server {
@@ -51,11 +52,15 @@ func NewServer(cfg *config.Config) *Server {
 	r.Use(gin.Recovery())
 
 	s := &Server{
-		router:  r,
-		cfg:     cfg,
-		ollama:  ollama.NewClient(cfg.OllamaBaseURL),
-		penalty: penalty.NewStore(time.Duration(cfg.PenaltyTTLMinutes) * time.Minute),
-		budget:  ratelimit.NewSlidingWindowLimiter(time.Hour, cfg.TokenBudgetPerHour),
+		router:      r,
+		cfg:         cfg,
+		proxyClient: llm.NewClient(cfg.LLMBaseURL, cfg.LLMAPIKey),
+		penalty:     penalty.NewStore(time.Duration(cfg.PenaltyTTLMinutes) * time.Minute),
+		budget:      ratelimit.NewSlidingWindowLimiter(time.Hour, cfg.TokenBudgetPerHour),
+	}
+
+	if cfg.JudgeEnabled {
+		s.judgeClient = llm.NewClient(cfg.JudgeBaseURL, cfg.JudgeAPIKey)
 	}
 
 	r.GET("/health", s.handleHealth)
@@ -74,8 +79,7 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		auth := c.GetHeader("Authorization")
-		token := strings.TrimPrefix(auth, "Bearer ")
+		token := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
 		if token != s.cfg.APIKey {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid API key"})
 			return
@@ -85,11 +89,19 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 }
 
 func (s *Server) handleHealth(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "aegis-llm"})
+	c.JSON(http.StatusOK, gin.H{
+		"status":        "ok",
+		"service":       "aegis-llm",
+		"judge_enabled": s.cfg.JudgeEnabled,
+	})
 }
+
+const maxBodyBytes = 1 << 20 // 1 MB
 
 func (s *Server) handleChat(c *gin.Context) {
 	start := time.Now()
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBodyBytes)
 
 	var req ChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -100,15 +112,14 @@ func (s *Server) handleChat(c *gin.Context) {
 	fingerprint := extractFingerprint(c)
 	model := req.Model
 	if model == "" {
-		model = s.cfg.OllamaProxyModel
+		model = s.cfg.LLMModel
 	}
 
-	// Extract last user message for pipeline analysis
 	userPrompt := lastUserMessage(req.Messages)
 
 	meta := ShieldMeta{
-		Fingerprint: fingerprint,
-		BudgetLimit: s.cfg.TokenBudgetPerHour,
+		BudgetLimit:  s.cfg.TokenBudgetPerHour,
+		JudgeEnabled: s.cfg.JudgeEnabled,
 	}
 
 	// --- Layer 1: Penalty check ---
@@ -146,23 +157,20 @@ func (s *Server) handleChat(c *gin.Context) {
 		return
 	}
 
-	// --- Layer 4: LLM judge for suspicious prompts ---
-	if level == pipeline.EntropySuspicious {
-		judgeResult, err := pipeline.RunLLMJudge(c.Request.Context(), s.ollama, s.cfg.OllamaJudgeModel, userPrompt)
-		if err != nil {
-			slog.Error("judge error", "err", err)
-		}
+	// --- Layer 4: LLM judge (only if enabled and prompt is suspicious) ---
+	if level == pipeline.EntropySuspicious && s.judgeClient != nil {
+		judgeResult, _ := pipeline.RunLLMJudge(c.Request.Context(), s.judgeClient, s.cfg.JudgeModel, userPrompt)
 		if !judgeResult.Allow {
 			s.penalty.Flag(fingerprint)
 			meta.ThreatLevel = "HIGH"
-			meta.BlockReason = "LLM judge blocked: " + judgeResult.Reason
+			meta.BlockReason = "LLM judge: " + judgeResult.Reason
 			slog.Warn("blocked by judge", "fingerprint", fingerprint, "reason", judgeResult.Reason)
 			c.JSON(http.StatusForbidden, gin.H{"error": "request blocked", "aegis": meta})
 			return
 		}
 	}
 
-	// --- Layer 5: Sliding window token budget (estimated pre-check) ---
+	// --- Layer 5: Sliding window token budget ---
 	estimatedTokens := estimateTokens(userPrompt)
 	if !s.budget.Allow(fingerprint, estimatedTokens) {
 		meta.ThreatLevel = "HIGH"
@@ -173,13 +181,21 @@ func (s *Server) handleChat(c *gin.Context) {
 		return
 	}
 
-	// --- Forward to Ollama ---
-	response, err := s.ollama.ChatCompleteMessages(c.Request.Context(), model, req.Messages)
+	// --- Forward to LLM ---
+	result, err := s.proxyClient.Chat(c.Request.Context(), model, req.Messages)
 	if err != nil {
-		slog.Error("ollama error", "err", err)
+		slog.Error("upstream LLM error", "err", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream LLM unavailable"})
 		return
 	}
+
+	// Record actual output tokens against the budget.
+	// If the provider returns usage data we use it; otherwise fall back to estimation.
+	outputTokens := result.CompletionTokens
+	if outputTokens == 0 {
+		outputTokens = estimateTokens(result.Content)
+	}
+	s.budget.Record(fingerprint, outputTokens)
 
 	meta.TokensUsed = s.budget.UsedTokens(fingerprint)
 	meta.ResponseTime = time.Since(start).String()
@@ -194,7 +210,7 @@ func (s *Server) handleChat(c *gin.Context) {
 
 	c.JSON(http.StatusOK, ChatResponse{
 		Model:   model,
-		Message: ollama.Message{Role: "assistant", Content: response},
+		Message: llm.Message{Role: "assistant", Content: result.Content},
 		Aegis:   meta,
 	})
 }
@@ -202,15 +218,13 @@ func (s *Server) handleChat(c *gin.Context) {
 func extractFingerprint(c *gin.Context) string {
 	userID := strings.TrimSpace(c.GetHeader("X-User-ID"))
 	ip := c.ClientIP()
-
-	// Only trust X-Forwarded-For if set by a known proxy (Gin's ClientIP handles this)
 	if userID != "" {
 		return userID + "|" + ip
 	}
 	return "anonymous|" + ip
 }
 
-func lastUserMessage(messages []ollama.Message) string {
+func lastUserMessage(messages []llm.Message) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" {
 			return messages[i].Content
@@ -219,11 +233,10 @@ func lastUserMessage(messages []ollama.Message) string {
 	return ""
 }
 
-// estimateTokens is a cheap approximation: ~4 chars per token.
+// estimateTokens approximates token count at ~4 chars per token.
 func estimateTokens(text string) int {
-	n := len(text) / 4
-	if n < 1 {
-		return 1
+	if n := len(text) / 4; n > 0 {
+		return n
 	}
-	return n
+	return 1
 }
