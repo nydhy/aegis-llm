@@ -1,6 +1,9 @@
 package proxy
 
 import (
+	"bufio"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -182,6 +185,11 @@ func (s *Server) handleChat(c *gin.Context) {
 	}
 
 	// --- Forward to LLM ---
+	if req.Stream {
+		s.handleChatStream(c, fingerprint, model, entropy, req.Messages, meta, start)
+		return
+	}
+
 	result, err := s.proxyClient.Chat(c.Request.Context(), model, req.Messages)
 	if err != nil {
 		slog.Error("upstream LLM error", "err", err)
@@ -213,6 +221,71 @@ func (s *Server) handleChat(c *gin.Context) {
 		Message: llm.Message{Role: "assistant", Content: result.Content},
 		Aegis:   meta,
 	})
+}
+
+// streamChunk is the minimal shape of an OpenAI SSE chunk we need to parse.
+type streamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+	} `json:"choices"`
+}
+
+func (s *Server) handleChatStream(
+	c *gin.Context,
+	fingerprint, model string,
+	entropy float64,
+	messages []llm.Message,
+	meta ShieldMeta,
+	start time.Time,
+) {
+	body, err := s.proxyClient.StreamRaw(c.Request.Context(), model, messages)
+	if err != nil {
+		slog.Error("upstream LLM stream error", "err", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream LLM unavailable"})
+		return
+	}
+	defer body.Close()
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
+
+	flusher, canFlush := c.Writer.(http.Flusher)
+	reader := bufio.NewReader(body)
+	var content strings.Builder
+
+	for {
+		line, err := reader.ReadString('\n')
+		if len(line) > 0 {
+			fmt.Fprint(c.Writer, line)
+			if canFlush {
+				flusher.Flush()
+			}
+			trimmed := strings.TrimRight(line, "\r\n")
+			if data, ok := strings.CutPrefix(trimmed, "data: "); ok && data != "[DONE]" {
+				var chunk streamChunk
+				if json.Unmarshal([]byte(data), &chunk) == nil && len(chunk.Choices) > 0 {
+					content.WriteString(chunk.Choices[0].Delta.Content)
+				}
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	s.budget.Record(fingerprint, estimateTokens(content.String()))
+
+	slog.Info("stream completed",
+		"fingerprint", fingerprint,
+		"threat_level", meta.ThreatLevel,
+		"entropy", entropy,
+		"tokens_estimated", estimateTokens(content.String()),
+		"duration", time.Since(start),
+	)
 }
 
 func extractFingerprint(c *gin.Context) string {

@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -252,6 +253,66 @@ func TestHandleChat_InvalidBody(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("invalid body: got %d, want 400", w.Code)
+	}
+}
+
+func TestHandleChat_Streaming(t *testing.T) {
+	// Fake upstream that returns a two-chunk SSE stream followed by [DONE].
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	s := NewServer(baseConfig(upstream.URL))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("stream: got %d, want 200 — body: %s", w.Code, w.Body.String())
+	}
+	ct := w.Header().Get("Content-Type")
+	if !strings.Contains(ct, "text/event-stream") {
+		t.Errorf("Content-Type = %q, want text/event-stream", ct)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Hello") || !strings.Contains(body, "world") {
+		t.Errorf("stream body missing expected content: %q", body)
+	}
+	if !strings.Contains(body, "[DONE]") {
+		t.Errorf("stream body missing [DONE]: %q", body)
+	}
+}
+
+func TestHandleChat_StreamingBudgetBlocked(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	cfg := baseConfig(upstream.URL)
+	cfg.TokenBudgetPerHour = 1
+	s := NewServer(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"test","messages":[{"role":"user","content":"hello world"}],"stream":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("stream budget: got %d, want 429", w.Code)
 	}
 }
 

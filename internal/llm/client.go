@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
@@ -15,18 +16,18 @@ type Message struct {
 }
 
 type Client struct {
-	baseURL    string
-	apiKey     string
-	httpClient *http.Client
+	baseURL      string
+	apiKey       string
+	httpClient   *http.Client
+	streamClient *http.Client // no timeout; context cancellation drives lifetime
 }
 
 func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
-		baseURL: baseURL,
-		apiKey:  apiKey,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		baseURL:      baseURL,
+		apiKey:       apiKey,
+		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		streamClient: &http.Client{},
 	}
 }
 
@@ -103,4 +104,34 @@ func (c *Client) Chat(ctx context.Context, model string, messages []Message) (Ch
 		CompletionTokens: result.Usage.CompletionTokens,
 		TotalTokens:      result.Usage.TotalTokens,
 	}, nil
+}
+
+// StreamRaw opens a streaming chat request and returns the raw SSE response body.
+// The caller must close the returned reader when done.
+// Context cancellation (e.g. client disconnect) terminates the stream.
+func (c *Client) StreamRaw(ctx context.Context, model string, messages []Message) (io.ReadCloser, error) {
+	body, err := json.Marshal(chatRequest{Model: model, Messages: messages, Stream: true})
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.streamClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("LLM returned status %d", resp.StatusCode)
+	}
+	return resp.Body, nil
 }
