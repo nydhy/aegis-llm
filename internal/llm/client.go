@@ -106,6 +106,19 @@ func (c *Client) Chat(ctx context.Context, model string, messages []Message) (Ch
 	}, nil
 }
 
+// GetRaw forwards a GET request to the given path and returns the response.
+// The caller must close the returned body.
+func (c *Client) GetRaw(ctx context.Context, path string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	return c.httpClient.Do(req)
+}
+
 // StreamRaw opens a streaming chat request and returns the raw SSE response body.
 // The caller must close the returned reader when done.
 // Context cancellation (e.g. client disconnect) terminates the stream.

@@ -89,6 +89,40 @@ func TestHandleHealth(t *testing.T) {
 	}
 }
 
+func TestHandleModels(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"object":"list","data":[{"id":"llama3"}]}`)
+	}))
+	defer upstream.Close()
+
+	s := NewServer(baseConfig(upstream.URL))
+	w := doRequest(t, s, http.MethodGet, "/v1/models", nil, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("models: got %d, want 200", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "llama3") {
+		t.Errorf("models body missing expected content: %q", w.Body.String())
+	}
+}
+
+func TestHandleModels_UpstreamDown(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	upstream.Close()
+
+	s := NewServer(baseConfig(upstream.URL))
+	w := doRequest(t, s, http.MethodGet, "/v1/models", nil, nil)
+
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("models upstream down: got %d, want 502", w.Code)
+	}
+}
+
 func TestHandleChat_CleanPrompt(t *testing.T) {
 	upstream := fakeUpstream(t, "Paris is the capital of France.")
 	defer upstream.Close()

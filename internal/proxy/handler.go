@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -69,6 +70,7 @@ func NewServer(cfg *config.Config) *Server {
 	}
 
 	r.GET("/health", s.handleHealth)
+	r.GET("/v1/models", s.authMiddleware(), s.handleModels)
 	r.POST("/v1/chat/completions", s.authMiddleware(), s.handleChat)
 
 	return s
@@ -99,6 +101,18 @@ func (s *Server) handleHealth(c *gin.Context) {
 		"service":       "aegis-llm",
 		"judge_enabled": s.cfg.JudgeEnabled,
 	})
+}
+
+func (s *Server) handleModels(c *gin.Context) {
+	resp, err := s.proxyClient.GetRaw(c.Request.Context(), "/models")
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream LLM unavailable"})
+		return
+	}
+	defer resp.Body.Close()
+	c.Header("Content-Type", resp.Header.Get("Content-Type"))
+	c.Status(resp.StatusCode)
+	io.Copy(c.Writer, resp.Body) //nolint:errcheck
 }
 
 const maxBodyBytes = 1 << 20 // 1 MB
