@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nydhy/aegis-llm/internal/config"
 	"github.com/nydhy/aegis-llm/internal/llm"
@@ -41,7 +42,7 @@ func baseConfig(upstreamURL string) *config.Config {
 		EntropyHighThreshold:       6.5,
 		EntropySuspiciousThreshold: 5.5,
 		TokenBudgetPerHour:         50000,
-		PenaltyTTLMinutes:          60,
+		PenaltyTTL:                 60 * time.Minute,
 		RateLimitRPM:               60,
 	}
 }

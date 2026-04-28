@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"time"
 )
 
 type Config struct {
@@ -27,8 +28,8 @@ type Config struct {
 	// Sliding window token budget per user per hour
 	TokenBudgetPerHour int
 
-	// Penalty TTL in minutes
-	PenaltyTTLMinutes int
+	// How long a flagged fingerprint stays in the penalty box
+	PenaltyTTL time.Duration
 
 	// Rate limit: requests per minute per user fingerprint
 	RateLimitRPM int
@@ -51,7 +52,7 @@ func Load() *Config {
 		EntropyHighThreshold:       getEnvFloat("ENTROPY_HIGH_THRESHOLD", 6.5),
 		EntropySuspiciousThreshold: getEnvFloat("ENTROPY_SUSPICIOUS_THRESHOLD", 5.5),
 		TokenBudgetPerHour:         getEnvInt("TOKEN_BUDGET_PER_HOUR", 50000),
-		PenaltyTTLMinutes:          getEnvInt("PENALTY_TTL_MINUTES", 60),
+		PenaltyTTL:                 time.Duration(getEnvInt("PENALTY_TTL_MINUTES", 60)) * time.Minute,
 		RateLimitRPM:               getEnvInt("RATE_LIMIT_RPM", 60),
 		APIKey:                     getEnv("AEGIS_API_KEY", ""),
 		DemoMode:                   getEnvBool("DEMO_MODE", false),

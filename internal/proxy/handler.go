@@ -62,7 +62,7 @@ func NewServer(cfg *config.Config) *Server {
 		router:      r,
 		cfg:         cfg,
 		proxyClient: llm.NewClient(cfg.LLMBaseURL, cfg.LLMAPIKey),
-		penalty:     penalty.NewStore(time.Duration(cfg.PenaltyTTLMinutes) * time.Minute),
+		penalty:     penalty.NewStore(cfg.PenaltyTTL),
 		rpm:         ratelimit.NewSlidingWindowLimiter(time.Minute, cfg.RateLimitRPM),
 		budget:      ratelimit.NewSlidingWindowLimiter(time.Hour, cfg.TokenBudgetPerHour),
 	}

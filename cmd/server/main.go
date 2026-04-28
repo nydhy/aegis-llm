@@ -32,6 +32,7 @@ func main() {
 		}
 		cfg.LLMBaseURL = stub.URL + "/v1"
 		cfg.LLMModel = "aegis-demo"
+		cfg.PenaltyTTL = 10 * time.Second
 		printDemoBanner(cfg.Port)
 	}
 
