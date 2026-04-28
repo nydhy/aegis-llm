@@ -2,6 +2,20 @@
 
 A drop-in security proxy for any OpenAI-compatible LLM endpoint. Sits between your client and the upstream model, running every request through a six-layer threat pipeline before forwarding it.
 
+## Try it — no LLM required
+
+Demo mode starts an in-process stub backend so you can explore the pipeline without any external dependencies.
+
+```bash
+# terminal 1 — start the proxy in demo mode
+DEMO_MODE=true go run ./cmd/server
+
+# terminal 2 — open the UI
+cd demo && npm install && npm run dev
+```
+
+Then open `http://localhost:5173`. Use the preset buttons to fire clean and jailbreak prompts and watch the security layers respond in real time.
+
 ## How it works
 
 ```mermaid

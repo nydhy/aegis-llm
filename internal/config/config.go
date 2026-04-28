@@ -35,6 +35,9 @@ type Config struct {
 
 	// Optional Bearer token to protect the proxy itself
 	APIKey string
+
+	// DemoMode starts an in-process stub LLM — no external dependencies needed
+	DemoMode bool
 }
 
 func Load() *Config {
@@ -51,6 +54,7 @@ func Load() *Config {
 		PenaltyTTLMinutes:          getEnvInt("PENALTY_TTL_MINUTES", 60),
 		RateLimitRPM:               getEnvInt("RATE_LIMIT_RPM", 60),
 		APIKey:                     getEnv("AEGIS_API_KEY", ""),
+		DemoMode:                   getEnvBool("DEMO_MODE", false),
 	}
 
 	// Judge can share the proxy provider or use a dedicated one
