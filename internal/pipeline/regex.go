@@ -20,7 +20,15 @@ var (
 		regexp.MustCompile(`(?i)override\s+(the\s+)?(system\s+)?(prompt|instructions?|rules?)`),
 		regexp.MustCompile(`(?i)disregard\s+(the\s+|all\s+|any\s+)?(system\s+)?(prompt|instructions?|rules?|guidelines?)`),
 		regexp.MustCompile(`(?i)bypass\s+(the\s+)?(safety|security|content)\s+(filter|check|restriction)`),
-		regexp.MustCompile(`(?i)\[SYSTEM\]|\[INST\]|<\|system\|>|<<SYS>>`),
+		// Special tokens used to inject system/role context across model families:
+		// Llama 2: [INST], [/INST], <<SYS>>, <</SYS>>
+		// Llama 3: <|start_header_id|>, <|eot_id|>
+		// ChatML (Mistral/Hermes): <|im_start|>, <|im_end|>
+		// GPT: <|endoftext|>
+		// Alpaca: ### Human:, ### Assistant:
+		regexp.MustCompile(`(?i)\[/?INST\]|\[/?SYS\]|<</?SYS>>|<<INST>>|\[SYSTEM\]`),
+		regexp.MustCompile(`<\|(?:system|im_start|im_end|endoftext|eot_id|start_header_id)\|>`),
+		regexp.MustCompile(`(?i)###\s*(human|assistant|system)\s*:`),
 	}
 )
 
