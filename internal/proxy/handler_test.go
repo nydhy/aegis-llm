@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/nydhy/aegis-llm/internal/config"
 	"github.com/nydhy/aegis-llm/internal/llm"
@@ -120,6 +119,42 @@ func TestHandleModels_UpstreamDown(t *testing.T) {
 
 	if w.Code != http.StatusBadGateway {
 		t.Errorf("models upstream down: got %d, want 502", w.Code)
+	}
+}
+
+func TestHandleEmbeddings(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/embeddings" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"object":"list","data":[{"embedding":[0.1,0.2,0.3],"index":0}]}`)
+	}))
+	defer upstream.Close()
+
+	s := NewServer(baseConfig(upstream.URL))
+	w := doRequest(t, s, http.MethodPost, "/v1/embeddings",
+		map[string]any{"model": "text-embedding-ada-002", "input": "hello world"}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("embeddings: got %d, want 200 — body: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "embedding") {
+		t.Errorf("embeddings body missing expected content: %q", w.Body.String())
+	}
+}
+
+func TestHandleEmbeddings_UpstreamDown(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	upstream.Close()
+
+	s := NewServer(baseConfig(upstream.URL))
+	w := doRequest(t, s, http.MethodPost, "/v1/embeddings",
+		map[string]any{"model": "text-embedding-ada-002", "input": "hello"}, nil)
+
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("embeddings upstream down: got %d, want 502", w.Code)
 	}
 }
 
@@ -373,5 +408,3 @@ func TestHandleChat_StreamingBudgetBlocked(t *testing.T) {
 	}
 }
 
-// Compile-time check that time import is used (penalty TTL tests need it indirectly).
-var _ = time.Second

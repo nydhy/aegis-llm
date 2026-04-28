@@ -119,6 +119,20 @@ func (c *Client) GetRaw(ctx context.Context, path string) (*http.Response, error
 	return c.httpClient.Do(req)
 }
 
+// PostRaw forwards a POST request with raw body to the given path and returns the response.
+// The caller must close the returned body.
+func (c *Client) PostRaw(ctx context.Context, path string, body io.Reader, contentType string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	return c.httpClient.Do(req)
+}
+
 // StreamRaw opens a streaming chat request and returns the raw SSE response body.
 // The caller must close the returned reader when done.
 // Context cancellation (e.g. client disconnect) terminates the stream.

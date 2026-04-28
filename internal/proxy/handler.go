@@ -73,6 +73,7 @@ func NewServer(cfg *config.Config) *Server {
 
 	r.GET("/health", s.handleHealth)
 	r.GET("/v1/models", s.authMiddleware(), s.handleModels)
+	r.POST("/v1/embeddings", s.authMiddleware(), s.handleEmbeddings)
 	r.POST("/v1/chat/completions", s.authMiddleware(), s.handleChat)
 
 	return s
@@ -115,6 +116,23 @@ func (s *Server) handleHealth(c *gin.Context) {
 
 func (s *Server) handleModels(c *gin.Context) {
 	resp, err := s.proxyClient.GetRaw(c.Request.Context(), "/models")
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream LLM unavailable"})
+		return
+	}
+	defer resp.Body.Close()
+	c.Header("Content-Type", resp.Header.Get("Content-Type"))
+	c.Status(resp.StatusCode)
+	io.Copy(c.Writer, resp.Body) //nolint:errcheck
+}
+
+func (s *Server) handleEmbeddings(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBodyBytes)
+	ct := c.GetHeader("Content-Type")
+	if ct == "" {
+		ct = "application/json"
+	}
+	resp, err := s.proxyClient.PostRaw(c.Request.Context(), "/embeddings", c.Request.Body, ct)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream LLM unavailable"})
 		return
@@ -265,6 +283,9 @@ type streamChunk struct {
 			Content string `json:"content"`
 		} `json:"delta"`
 	} `json:"choices"`
+	Usage *struct {
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage"`
 }
 
 func (s *Server) handleChatStream(
@@ -291,6 +312,7 @@ func (s *Server) handleChatStream(
 	flusher, canFlush := c.Writer.(http.Flusher)
 	reader := bufio.NewReader(body)
 	var content strings.Builder
+	outputTokens := 0
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -302,8 +324,13 @@ func (s *Server) handleChatStream(
 			trimmed := strings.TrimRight(line, "\r\n")
 			if data, ok := strings.CutPrefix(trimmed, "data: "); ok && data != "[DONE]" {
 				var chunk streamChunk
-				if json.Unmarshal([]byte(data), &chunk) == nil && len(chunk.Choices) > 0 {
-					content.WriteString(chunk.Choices[0].Delta.Content)
+				if json.Unmarshal([]byte(data), &chunk) == nil {
+					if len(chunk.Choices) > 0 {
+						content.WriteString(chunk.Choices[0].Delta.Content)
+					}
+					if chunk.Usage != nil && chunk.Usage.CompletionTokens > 0 {
+						outputTokens = chunk.Usage.CompletionTokens
+					}
 				}
 			}
 		}
@@ -312,13 +339,16 @@ func (s *Server) handleChatStream(
 		}
 	}
 
-	s.budget.Record(fingerprint, estimateTokens(content.String()))
+	if outputTokens == 0 {
+		outputTokens = estimateTokens(content.String())
+	}
+	s.budget.Record(fingerprint, outputTokens)
 
 	slog.Info("stream completed",
 		"fingerprint", fingerprint,
 		"threat_level", meta.ThreatLevel,
 		"entropy", entropy,
-		"tokens_estimated", estimateTokens(content.String()),
+		"output_tokens", outputTokens,
 		"duration", time.Since(start),
 	)
 }
