@@ -30,7 +30,7 @@ func main() {
 			slog.Error("failed to start demo stub", "err", err)
 			os.Exit(1)
 		}
-		cfg.LLMBaseURL = stub.URL
+		cfg.LLMBaseURL = stub.URL + "/v1"
 		cfg.LLMModel = "aegis-demo"
 		printDemoBanner(cfg.Port)
 	}
