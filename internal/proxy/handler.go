@@ -23,6 +23,7 @@ type Server struct {
 	proxyClient *llm.Client
 	judgeClient *llm.Client // nil when judge is disabled
 	penalty     *penalty.Store
+	rpm         *ratelimit.SlidingWindowLimiter
 	budget      *ratelimit.SlidingWindowLimiter
 }
 
@@ -59,6 +60,7 @@ func NewServer(cfg *config.Config) *Server {
 		cfg:         cfg,
 		proxyClient: llm.NewClient(cfg.LLMBaseURL, cfg.LLMAPIKey),
 		penalty:     penalty.NewStore(time.Duration(cfg.PenaltyTTLMinutes) * time.Minute),
+		rpm:         ratelimit.NewSlidingWindowLimiter(time.Minute, cfg.RateLimitRPM),
 		budget:      ratelimit.NewSlidingWindowLimiter(time.Hour, cfg.TokenBudgetPerHour),
 	}
 
@@ -135,7 +137,16 @@ func (s *Server) handleChat(c *gin.Context) {
 		return
 	}
 
-	// --- Layer 2: Regex scan ---
+	// --- Layer 2: RPM rate limit ---
+	if !s.rpm.Allow(fingerprint, 1) {
+		meta.ThreatLevel = "HIGH"
+		meta.BlockReason = "rate limit exceeded"
+		slog.Warn("blocked rate limit", "fingerprint", fingerprint)
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "rate limit exceeded", "aegis": meta})
+		return
+	}
+
+	// --- Layer 3: Regex scan ---
 	regexResult := pipeline.RunRegexScan(userPrompt)
 	if regexResult.Flagged {
 		s.penalty.Flag(fingerprint)
@@ -146,7 +157,7 @@ func (s *Server) handleChat(c *gin.Context) {
 		return
 	}
 
-	// --- Layer 3: Entropy analysis ---
+	// --- Layer 4: Entropy analysis ---
 	entropy := pipeline.ShannonEntropy(userPrompt)
 	level := pipeline.ClassifyEntropy(entropy, s.cfg.EntropyHighThreshold, s.cfg.EntropySuspiciousThreshold)
 	meta.Entropy = entropy
@@ -160,7 +171,7 @@ func (s *Server) handleChat(c *gin.Context) {
 		return
 	}
 
-	// --- Layer 4: LLM judge (only if enabled and prompt is suspicious) ---
+	// --- Layer 5: LLM judge (only if enabled and prompt is suspicious) ---
 	if level == pipeline.EntropySuspicious && s.judgeClient != nil {
 		judgeResult, _ := pipeline.RunLLMJudge(c.Request.Context(), s.judgeClient, s.cfg.JudgeModel, userPrompt)
 		if !judgeResult.Allow {
@@ -173,7 +184,7 @@ func (s *Server) handleChat(c *gin.Context) {
 		}
 	}
 
-	// --- Layer 5: Sliding window token budget ---
+	// --- Layer 6: Sliding window token budget ---
 	estimatedTokens := estimateTokens(userPrompt)
 	if !s.budget.Allow(fingerprint, estimatedTokens) {
 		meta.ThreatLevel = "HIGH"

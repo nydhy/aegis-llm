@@ -256,6 +256,29 @@ func TestHandleChat_InvalidBody(t *testing.T) {
 	}
 }
 
+func TestHandleChat_RPMExceeded(t *testing.T) {
+	upstream := fakeUpstream(t, "ok")
+	defer upstream.Close()
+
+	cfg := baseConfig(upstream.URL)
+	cfg.RateLimitRPM = 2
+	s := NewServer(cfg)
+
+	for i := 0; i < 2; i++ {
+		w := doRequest(t, s, http.MethodPost, "/v1/chat/completions",
+			chatBody("hello"), map[string]string{"X-User-ID": "rpm-user"})
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d: got %d, want 200", i+1, w.Code)
+		}
+	}
+
+	w := doRequest(t, s, http.MethodPost, "/v1/chat/completions",
+		chatBody("hello"), map[string]string{"X-User-ID": "rpm-user"})
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("after RPM exceeded: got %d, want 429", w.Code)
+	}
+}
+
 func TestHandleChat_Streaming(t *testing.T) {
 	// Fake upstream that returns a two-chunk SSE stream followed by [DONE].
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
