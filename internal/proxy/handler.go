@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 
 type Server struct {
 	router      *gin.Engine
+	httpSrv     *http.Server
 	cfg         *config.Config
 	proxyClient *llm.Client
 	judgeClient *llm.Client // nil when judge is disabled
@@ -77,7 +79,15 @@ func NewServer(cfg *config.Config) *Server {
 }
 
 func (s *Server) Run(addr string) error {
-	return s.router.Run(addr)
+	s.httpSrv = &http.Server{Addr: addr, Handler: s.router}
+	return s.httpSrv.ListenAndServe()
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.httpSrv == nil {
+		return nil
+	}
+	return s.httpSrv.Shutdown(ctx)
 }
 
 func (s *Server) authMiddleware() gin.HandlerFunc {
