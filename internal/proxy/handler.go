@@ -115,6 +115,11 @@ func (s *Server) handleHealth(c *gin.Context) {
 }
 
 func (s *Server) handleModels(c *gin.Context) {
+	fingerprint := extractFingerprint(c)
+	if !s.rpm.Allow(fingerprint, 1) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "rate limit exceeded"})
+		return
+	}
 	resp, err := s.proxyClient.GetRaw(c.Request.Context(), "/models")
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream LLM unavailable"})
@@ -127,6 +132,11 @@ func (s *Server) handleModels(c *gin.Context) {
 }
 
 func (s *Server) handleEmbeddings(c *gin.Context) {
+	fingerprint := extractFingerprint(c)
+	if !s.rpm.Allow(fingerprint, 1) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "rate limit exceeded"})
+		return
+	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBodyBytes)
 	ct := c.GetHeader("Content-Type")
 	if ct == "" {
@@ -215,7 +225,10 @@ func (s *Server) handleChat(c *gin.Context) {
 
 	// --- Layer 5: LLM judge (only if enabled and prompt is suspicious) ---
 	if level == pipeline.EntropySuspicious && s.judgeClient != nil {
-		judgeResult, _ := pipeline.RunLLMJudge(c.Request.Context(), s.judgeClient, s.cfg.JudgeModel, userPrompt)
+		judgeResult, err := pipeline.RunLLMJudge(c.Request.Context(), s.judgeClient, s.cfg.JudgeModel, userPrompt)
+		if err != nil {
+			slog.Warn("judge error, failing open", "fingerprint", fingerprint, "err", err)
+		}
 		if !judgeResult.Allow {
 			s.penalty.Flag(fingerprint)
 			meta.ThreatLevel = "HIGH"
@@ -227,6 +240,8 @@ func (s *Server) handleChat(c *gin.Context) {
 	}
 
 	// --- Layer 6: Sliding window token budget ---
+	// Allow() charges estimated input tokens now; Record() charges actual output tokens
+	// after the response returns — total budget deducted = input estimate + output actual.
 	estimatedTokens := estimateTokens(userPrompt)
 	if !s.budget.Allow(fingerprint, estimatedTokens) {
 		meta.ThreatLevel = "HIGH"

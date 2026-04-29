@@ -14,8 +14,7 @@ const demoReply = "Your request passed all 6 security layers and reached the dem
 // Stub is an in-process OpenAI-compatible HTTP server used in demo mode.
 // It returns canned responses so aegis-llm can be evaluated without any external LLM.
 type Stub struct {
-	URL    string
-	server *http.Server
+	URL string
 }
 
 // Start binds to a random localhost port and begins serving immediately.
@@ -30,12 +29,9 @@ func Start() (*Stub, error) {
 	mux.HandleFunc("/v1/chat/completions", handleChat)
 	mux.HandleFunc("/v1/embeddings", handleEmbeddings)
 
-	s := &Stub{
-		URL:    "http://" + l.Addr().String(),
-		server: &http.Server{Handler: mux},
-	}
-	go s.server.Serve(l) //nolint:errcheck
-	return s, nil
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(l) //nolint:errcheck
+	return &Stub{URL: "http://" + l.Addr().String()}, nil
 }
 
 func handleModels(w http.ResponseWriter, r *http.Request) {

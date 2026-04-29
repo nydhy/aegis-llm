@@ -55,9 +55,7 @@ type chatResponse struct {
 // ChatResult holds the LLM reply and token usage reported by the provider.
 type ChatResult struct {
 	Content          string
-	PromptTokens     int
 	CompletionTokens int
-	TotalTokens      int
 }
 
 // Chat sends messages to any OpenAI-compatible endpoint and returns the reply with usage.
@@ -100,9 +98,7 @@ func (c *Client) Chat(ctx context.Context, model string, messages []Message) (Ch
 
 	return ChatResult{
 		Content:          result.Choices[0].Message.Content,
-		PromptTokens:     result.Usage.PromptTokens,
 		CompletionTokens: result.Usage.CompletionTokens,
-		TotalTokens:      result.Usage.TotalTokens,
 	}, nil
 }
 
